@@ -1,111 +1,141 @@
 #include <iostream>
 #include <thread>
-#include <map>
 #include <vector>
-#include <fstream>
-#include <sstream>
-#include <mutex>
 #include <netinet/in.h>
 #include <unistd.h>
+#include <cstdlib>
+#include <ctime>
 #include <cstring>
+
+using namespace std;
 
 #define PORT 8080
 #define BUFFER_SIZE 1024
 
-using namespace std;
+int clients[2];
+char board[3][3];
+char symbols[2] = {'X', 'O'};
+int currentPlayer = 0;
+bool gameOver = false;
 
-map<string, int> clients;
-mutex client_mutex;
-
-void logMessage(const string& clientName, const string& message) {
-    ofstream file(clientName + "_log.txt", ios::app);
-    file << message << endl;
+void initializeBoard() {
+    char c = '1';
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++)
+            board[i][j] = c++;
 }
 
-void handleClient(int clientSocket) {
-    char buffer[BUFFER_SIZE] = {0};
-    read(clientSocket, buffer, BUFFER_SIZE);
-    string clientName(buffer);
-
-    {
-        lock_guard<mutex> lock(client_mutex);
-        clients[clientName] = clientSocket;
+string getBoard() {
+    string s;
+    for (int i = 0; i < 3; i++) {
+        s += "\n ";
+        for (int j = 0; j < 3; j++) {
+            s += board[i][j];
+            if (j < 2) s += " | ";
+        }
+        if (i < 2) s += "\n-----------";
     }
+    return s;
+}
 
-    string welcome = "Welcome, " + clientName + "!";
-    send(clientSocket, welcome.c_str(), welcome.size(), 0);
+bool isWin(char symbol) {
+    for (int i = 0; i < 3; i++)
+        if ((board[i][0] == symbol && board[i][1] == symbol && board[i][2] == symbol) ||
+            (board[0][i] == symbol && board[1][i] == symbol && board[2][i] == symbol))
+            return true;
 
-    while (true) {
-        memset(buffer, 0, BUFFER_SIZE);
-        int valread = read(clientSocket, buffer, BUFFER_SIZE);
-        if (valread <= 0) break;
+    if ((board[0][0] == symbol && board[1][1] == symbol && board[2][2] == symbol) ||
+        (board[0][2] == symbol && board[1][1] == symbol && board[2][0] == symbol))
+        return true;
 
-        string msg(buffer);
-        size_t pos = msg.find(':');
-        if (pos == string::npos) continue;
+    return false;
+}
 
-        string recipient = msg.substr(0, pos);
-        string content = msg.substr(pos + 1);
+bool isDraw() {
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++)
+            if (board[i][j] != 'X' && board[i][j] != 'O')
+                return false;
+    return true;
+}
 
-        string logEntry = clientName + " -> " + recipient + ": " + content;
-        logMessage(clientName, logEntry);
-        logMessage(recipient, logEntry);
+void sendToAll(string message) {
+    for (int i = 0; i < 2; i++)
+        send(clients[i], message.c_str(), message.size(), 0);
+}
 
-        lock_guard<mutex> lock(client_mutex);
-        if (clients.count(recipient)) {
-            send(clients[recipient], logEntry.c_str(), logEntry.size(), 0);
+void handleGame() {
+    initializeBoard();
+    srand(time(0));
+    currentPlayer = rand() % 2;
+
+    send(clients[currentPlayer], "You won the toss! You go first.\n", 35, 0);
+    send(clients[1 - currentPlayer], "You lost the toss. Wait for your turn.\n", 40, 0);
+
+    while (!gameOver) {
+        sendToAll(getBoard());
+
+        string prompt = "\nPlayer " + string(1, symbols[currentPlayer]) + ", enter your move (1-9): ";
+        send(clients[currentPlayer], prompt.c_str(), prompt.size(), 0);
+
+        char buffer[BUFFER_SIZE] = {0};
+        read(clients[currentPlayer], buffer, BUFFER_SIZE);
+        int move = buffer[0] - '1';
+
+        int row = move / 3, col = move % 3;
+
+        if (move < 0 || move > 8 || board[row][col] == 'X' || board[row][col] == 'O') {
+            string err = "Invalid move. Try again.\n";
+            send(clients[currentPlayer], err.c_str(), err.size(), 0);
+            continue;
+        }
+
+        board[row][col] = symbols[currentPlayer];
+
+        if (isWin(symbols[currentPlayer])) {
+            sendToAll(getBoard());
+            string winMsg = "\nPlayer " + string(1, symbols[currentPlayer]) + " wins! Game Over.\n";
+            sendToAll(winMsg);
+            gameOver = true;
+        } else if (isDraw()) {
+            sendToAll(getBoard());
+            string drawMsg = "\nIt's a draw! Game Over.\n";
+            sendToAll(drawMsg);
+            gameOver = true;
+        } else {
+            currentPlayer = 1 - currentPlayer;
         }
     }
 
-    {
-        lock_guard<mutex> lock(client_mutex);
-        clients.erase(clientName);
-    }
-    close(clientSocket);
-}
-
-void serverCommandLoop() {
-    while (true) {
-        string command;
-        getline(cin, command);
-        if (command.rfind("/logs ", 0) == 0) {
-            string clientName = command.substr(6);
-            ifstream file(clientName + "_log.txt");
-            if (!file.is_open()) {
-                cout << "No logs for client: " << clientName << endl;
-                continue;
-            }
-            cout << "Chat logs for " << clientName << ":\n";
-            string line;
-            while (getline(file, line)) {
-                cout << line << endl;
-            }
-        }
-    }
+    for (int i = 0; i < 2; i++) close(clients[i]);
 }
 
 int main() {
-    int server_fd, new_socket;
+    int server_fd;
     struct sockaddr_in address;
-    int opt = 1;
-    int addrlen = sizeof(address);
+    socklen_t addrlen = sizeof(address);
 
     server_fd = socket(AF_INET, SOCK_STREAM, 0);
-    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt));
     address.sin_family = AF_INET;
     address.sin_addr.s_addr = INADDR_ANY;
     address.sin_port = htons(PORT);
+
     bind(server_fd, (struct sockaddr *)&address, sizeof(address));
-    listen(server_fd, 5);
+    listen(server_fd, 2);
 
-    cout << "Server started on port " << PORT << endl;
+    cout << "Server started. Waiting for 2 players...\n";
 
-    thread(serverCommandLoop).detach();
-
-    while (true) {
-        new_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen);
-        thread(handleClient, new_socket).detach();
+    for (int i = 0; i < 2; i++) {
+        clients[i] = accept(server_fd, (struct sockaddr *)&address, &addrlen);
+        string msg = "You are Player ";
+        msg += symbols[i];
+        msg += "\nWaiting for opponent...\n";
+        send(clients[i], msg.c_str(), msg.size(), 0);
     }
 
+    cout << "Both players connected. Starting game...\n";
+    handleGame();
+
+    close(server_fd);
     return 0;
 }
