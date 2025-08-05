@@ -1,45 +1,31 @@
 #include <iostream>
-#include <thread>
 #include <netinet/in.h>
-#include <arpa/inet.h>
 #include <unistd.h>
 #include <cstring>
-
-#define PORT 8080
-#define BUFFER_SIZE 1024
-
 using namespace std;
 
-void receiveMessages(int sock) {
-    char buffer[BUFFER_SIZE];
-    while (true) {
-        memset(buffer, 0, BUFFER_SIZE);
-        int valread = read(sock, buffer, BUFFER_SIZE);
-        if (valread <= 0) break;
-        cout << buffer << endl;
-
-        if (strstr(buffer, "Game Over")) break;
-    }
-}
-
 int main() {
-    int sock = 0;
-    struct sockaddr_in serv_addr;
-
-    sock = socket(AF_INET, SOCK_STREAM, 0);
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    sockaddr_in serv_addr = {};
     serv_addr.sin_family = AF_INET;
-    serv_addr.sin_port = htons(PORT);
-    inet_pton(AF_INET, "127.0.0.1", &serv_addr.sin_addr);
+    serv_addr.sin_port = htons(7000);
+    serv_addr.sin_addr.s_addr = INADDR_ANY;
 
-    connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr));
+    connect(sock, (sockaddr*)&serv_addr, sizeof(serv_addr));
 
-    thread(receiveMessages, sock).detach();
+    char buffer[1024];
 
     while (true) {
-        string input;
-        getline(cin, input);
-        if (input.size() > 0) {
-            send(sock, input.c_str(), input.size(), 0);
+        memset(buffer, 0, sizeof(buffer));
+        int val = read(sock, buffer, sizeof(buffer));
+        if (val <= 0) break;
+
+        cout << buffer;
+
+        if (strstr(buffer, "enter")) {
+            string move;
+            cin >> move;
+            send(sock, move.c_str(), 1, 0);
         }
     }
 
