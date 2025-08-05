@@ -1,111 +1,74 @@
 #include <iostream>
-#include <thread>
 #include <map>
-#include <vector>
-#include <fstream>
-#include <sstream>
+#include <set>
+#include <thread>
 #include <mutex>
 #include <netinet/in.h>
 #include <unistd.h>
 #include <cstring>
-
-#define PORT 8080
-#define BUFFER_SIZE 1024
-
 using namespace std;
 
-map<string, int> clients;
-mutex client_mutex;
+mutex mtx;
+set<int> clients;
 
-void logMessage(const string& clientName, const string& message) {
-    ofstream file(clientName + "_log.txt", ios::app);
-    file << message << endl;
-}
-
-void handleClient(int clientSocket) {
-    char buffer[BUFFER_SIZE] = {0};
-    read(clientSocket, buffer, BUFFER_SIZE);
-    string clientName(buffer);
-
-    {
-        lock_guard<mutex> lock(client_mutex);
-        clients[clientName] = clientSocket;
-    }
-
-    string welcome = "Welcome, " + clientName + "!";
-    send(clientSocket, welcome.c_str(), welcome.size(), 0);
-
-    while (true) {
-        memset(buffer, 0, BUFFER_SIZE);
-        int valread = read(clientSocket, buffer, BUFFER_SIZE);
-        if (valread <= 0) break;
-
-        string msg(buffer);
-        size_t pos = msg.find(':');
-        if (pos == string::npos) continue;
-
-        string recipient = msg.substr(0, pos);
-        string content = msg.substr(pos + 1);
-
-        string logEntry = clientName + " -> " + recipient + ": " + content;
-        logMessage(clientName, logEntry);
-        logMessage(recipient, logEntry);
-
-        lock_guard<mutex> lock(client_mutex);
-        if (clients.count(recipient)) {
-            send(clients[recipient], logEntry.c_str(), logEntry.size(), 0);
+void broadcast(const string& msg, int sender) {
+    lock_guard<mutex> lock(mtx);
+    for (int client : clients) {
+        if (client != sender) {
+            send(client, msg.c_str(), msg.length(), 0);
         }
     }
-
-    {
-        lock_guard<mutex> lock(client_mutex);
-        clients.erase(clientName);
-    }
-    close(clientSocket);
 }
 
-void serverCommandLoop() {
+void handle_client(int client_socket) {
+    {
+        lock_guard<mutex> lock(mtx);
+        clients.insert(client_socket);
+    }
+
+    char buffer[1024];
     while (true) {
-        string command;
-        getline(cin, command);
-        if (command.rfind("/logs ", 0) == 0) {
-            string clientName = command.substr(6);
-            ifstream file(clientName + "_log.txt");
-            if (!file.is_open()) {
-                cout << "No logs for client: " << clientName << endl;
-                continue;
-            }
-            cout << "Chat logs for " << clientName << ":\n";
-            string line;
-            while (getline(file, line)) {
-                cout << line << endl;
-            }
-        }
+        memset(buffer, 0, sizeof(buffer));
+        int val = read(client_socket, buffer, sizeof(buffer));
+        if (val <= 0) break;  // Client disconnected
+        string msg = buffer;
+        broadcast(msg, client_socket);
+    }
+
+    close(client_socket);
+    {
+        lock_guard<mutex> lock(mtx);
+        clients.erase(client_socket);
     }
 }
 
 int main() {
-    int server_fd, new_socket;
-    struct sockaddr_in address;
-    int opt = 1;
-    int addrlen = sizeof(address);
-
-    server_fd = socket(AF_INET, SOCK_STREAM, 0);
-    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt));
-    address.sin_family = AF_INET;
-    address.sin_addr.s_addr = INADDR_ANY;
-    address.sin_port = htons(PORT);
-    bind(server_fd, (struct sockaddr *)&address, sizeof(address));
-    listen(server_fd, 5);
-
-    cout << "Server started on port " << PORT << endl;
-
-    thread(serverCommandLoop).detach();
-
-    while (true) {
-        new_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen);
-        thread(handleClient, new_socket).detach();
+    int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_fd < 0) {
+        cerr << "Socket creation failed\n";
+        return 1;
     }
 
+    sockaddr_in address = {};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = INADDR_ANY;
+    address.sin_port = htons(9999);
+
+    if (bind(server_fd, (sockaddr*)&address, sizeof(address)) < 0) {
+        cerr << "Bind failed\n";
+        return 1;
+    }
+
+    listen(server_fd, 10);
+    cout << "Chat server started on port 9999...\n";
+
+    while (true) {
+        int client_socket = accept(server_fd, NULL, NULL);
+        if (client_socket >= 0) {
+            thread(handle_client, client_socket).detach();
+        }
+    }
+
+    close(server_fd);
     return 0;
 }
