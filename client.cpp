@@ -1,48 +1,52 @@
 #include <iostream>
-#include <cstring>
-#include <unistd.h>
+#include <thread>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <unistd.h>
+#include <cstring>
 
 #define PORT 8080
-#define MAX 1024
+#define BUFFER_SIZE 1024
 
 using namespace std;
 
-int main() {
-    int sockfd;
-    struct sockaddr_in servaddr;
-    char buffer[MAX];
-
-    sockfd = socket(AF_INET, SOCK_STREAM, 0); // create TCP socket
-    if (sockfd < 0) {
-        cerr << "Socket creation failed\n";
-        return 1;
-    }
-
-    // Setup server address
-    servaddr.sin_family = AF_INET;
-    servaddr.sin_port = htons(PORT);
-    servaddr.sin_addr.s_addr = inet_addr("127.0.0.1"); // localhost
-
-    if (connect(sockfd, (struct sockaddr*)&servaddr, sizeof(servaddr)) != 0) {
-        cerr << "Connection with server failed\n";
-        return 1;
-    }
-
+void receiveMessages(int sock) {
+    char buffer[BUFFER_SIZE];
     while (true) {
-        string expr;
-        cout << "Enter postfix expression (or 'exit' to quit): ";
-        getline(cin, expr);
+        memset(buffer, 0, BUFFER_SIZE);
+        int valread = read(sock, buffer, BUFFER_SIZE);
+        if (valread <= 0) break;
+        cout << "\n[Received] " << buffer << endl;
+    }
+}
 
-        send(sockfd, expr.c_str(), expr.size(), 0); // send input to server
-        if (expr == "exit") break;
+int main() {
+    int sock = 0;
+    struct sockaddr_in serv_addr;
+    char buffer[BUFFER_SIZE] = {0};
 
-        memset(buffer, 0, MAX);
-        int n = read(sockfd, buffer, MAX); // receive result
-        cout << "Result: " << buffer << "\n";
+    sock = socket(AF_INET, SOCK_STREAM, 0);
+    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_port = htons(PORT);
+
+    inet_pton(AF_INET, "127.0.0.1", &serv_addr.sin_addr);
+    connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr));
+
+    cout << "Enter your name: ";
+    string name;
+    getline(cin, name);
+    send(sock, name.c_str(), name.size(), 0);
+
+    thread(receiveMessages, sock).detach();
+
+    cout << "Send messages in format: recipient_name:message\n";
+    while (true) {
+        string msg;
+        getline(cin, msg);
+        if (msg == "/quit") break;
+        send(sock, msg.c_str(), msg.size(), 0);
     }
 
-    close(sockfd); // close client socket
+    close(sock);
     return 0;
 }
